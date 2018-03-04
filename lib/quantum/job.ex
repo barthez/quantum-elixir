@@ -29,9 +29,10 @@ defmodule Quantum.Job do
   @type task :: {atom, atom, [any]} | (() -> any)
   @type timezone :: :utc | :local | String.t()
   @type schedule :: Crontab.CronExpression.t()
+  @type name :: atom | Reference
 
   @type t :: %__MODULE__{
-          name: atom | Reference,
+          name: name,
           schedule: schedule | nil,
           task: task | nil,
           state: state,

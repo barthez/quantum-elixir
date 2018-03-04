@@ -7,8 +7,33 @@ defmodule Quantum.ExecutionBroadcaster do
 
   require Logger
 
-  alias Quantum.{Job, Util, DateLibrary}
+  alias Quantum.{Job, Util, DateLibrary, JobBroadcaster}
   alias Crontab.{Scheduler, CronExpression}
+
+  @typedoc "ExecutionBroadcaster timer"
+  @type timer :: {reference(), NaiveDateTime.t()}
+
+  @typedoc "ExecutionBroadcaster job execution list"
+  @type job_execution_list :: [{NaiveDateTime.t(), [Job.t()]}]
+
+  @typedoc "ExecutionBroadcaster state"
+  @type state :: %{
+          jobs: job_execution_list,
+          time: NaiveDateTime.t(),
+          timer: nil | timer
+        }
+
+  @typedoc "Incoming events type"
+  @type event :: JobBroadcaster.job_event()
+
+  @typedoc "Outgoing events type"
+  @type execution_event :: {:execute, Job.t()}
+
+  @type noreply_return :: {
+          :noreply,
+          [execution_event()],
+          state()
+        }
 
   @doc """
   Start Stage
@@ -33,11 +58,14 @@ defmodule Quantum.ExecutionBroadcaster do
   end
 
   @doc false
+  @spec init(job_broadcaster :: GenServer.server()) :: {:producer_consumer, state(), keyword()}
   def init(job_broadcaster) do
     state = %{jobs: [], time: NaiveDateTime.utc_now(), timer: nil}
     {:producer_consumer, state, subscribe_to: [job_broadcaster]}
   end
 
+  @spec handle_events(events :: [event], from :: GenStage.from(), state :: state()) ::
+          noreply_return()
   def handle_events(events, _, state) do
     reboot_add_events =
       events
@@ -62,6 +90,7 @@ defmodule Quantum.ExecutionBroadcaster do
     {:noreply, reboot_add_events, state}
   end
 
+  @spec handle_info(action :: :execute, state :: state()) :: noreply_return()
   def handle_info(:execute, %{jobs: [{time_to_execute, jobs_to_execute} | tail]} = state) do
     state =
       state
@@ -89,6 +118,7 @@ defmodule Quantum.ExecutionBroadcaster do
     {:noreply, Enum.map(jobs_to_execute, fn job -> {:execute, job} end), state}
   end
 
+  @spec handle_event(event :: event(), state :: state()) :: state()
   defp handle_event({:add, %{name: job_name} = job}, state) do
     Logger.debug(fn ->
       "[#{inspect(Node.self())}][#{__MODULE__}] Adding job #{inspect(job_name)}"
@@ -115,6 +145,7 @@ defmodule Quantum.ExecutionBroadcaster do
     %{state | jobs: jobs}
   end
 
+  @spec add_job_to_state(job :: Job.t(), state :: state()) :: state()
   defp add_job_to_state(
          %Job{schedule: schedule, timezone: timezone, name: name} = job,
          %{time: time} = state
@@ -142,14 +173,18 @@ defmodule Quantum.ExecutionBroadcaster do
       state
   end
 
+  @spec sort_state(state :: state()) :: state()
   defp sort_state(%{jobs: jobs} = state) do
     %{state | jobs: Enum.sort_by(jobs, fn {date, _} -> NaiveDateTime.to_erl(date) end)}
   end
 
+  @spec add_to_state(state :: state(), date :: NaiveDateTime.t(), job :: Job.t()) :: state()
   defp add_to_state(%{jobs: jobs} = state, date, job) do
     %{state | jobs: add_job_at_date(jobs, date, job)}
   end
 
+  @spec add_job_at_date(jobs :: job_execution_list, date :: NaiveDateTime.t(), job :: Job.t()) ::
+          job_execution_list
   defp add_job_at_date(jobs, date, job) do
     case find_date_and_put_job(jobs, date, job) do
       {:found, list} -> list
@@ -157,6 +192,11 @@ defmodule Quantum.ExecutionBroadcaster do
     end
   end
 
+  @spec find_date_and_put_job(
+          jobs :: job_execution_list,
+          date :: NaiveDateTime.t(),
+          job :: Job.t()
+        ) :: {:found | :not_found, job_execution_list}
   defp find_date_and_put_job([{date, jobs} | rest], date, job) do
     {:found, [{date, [job | jobs]} | rest]}
   end
@@ -170,6 +210,7 @@ defmodule Quantum.ExecutionBroadcaster do
     {state, [head | new_rest]}
   end
 
+  @spec reset_timer(state :: state()) :: state()
   defp reset_timer(%{timer: nil, jobs: []} = state) do
     state
   end
@@ -215,11 +256,13 @@ defmodule Quantum.ExecutionBroadcaster do
     end
   end
 
+  @spec next_run_date(jobs :: job_execution_list()) :: NaiveDateTime.t()
   defp next_run_date(jobs) do
     [{run_date, _} | _rest] = jobs
     run_date
   end
 
+  @spec add_reboot_event?(event :: event()) :: boolean()
   defp add_reboot_event?({:add, %Job{schedule: %CronExpression{reboot: true}}}), do: true
   defp add_reboot_event?(_), do: false
 end

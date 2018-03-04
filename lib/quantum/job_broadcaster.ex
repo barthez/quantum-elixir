@@ -9,6 +9,44 @@ defmodule Quantum.JobBroadcaster do
 
   alias Quantum.{Job, Util}
 
+  @typedoc "Jobs list"
+  @type jobs_list :: [Job.t()]
+
+  @typedoc "Job action tuple"
+  @type job_action ::
+          {:add, Job.t()}
+          | {:delete, Job.name()}
+          | :delete_all
+          | {:find_job, Job.name()}
+          | :jobs
+
+  @typedoc "Job event tuple"
+  @type job_event ::
+          {:add, Job.t()}
+          | {:remove, Job.name()}
+
+  @typedoc "Map with jobs indexed by name"
+  @type jobs_index :: %{}
+
+  @typedoc "JobBroadcaster state"
+  @type state :: %{
+          jobs: jobs_index(),
+          buffer: [job_event()]
+        }
+
+  @type noreply_return :: {
+          :noreply,
+          [job_event()],
+          state()
+        }
+
+  @type reply_return :: {
+          :reply,
+          any(),
+          [job_event()],
+          state()
+        }
+
   @doc """
   Start Job Broadcaster
 
@@ -32,6 +70,7 @@ defmodule Quantum.JobBroadcaster do
   end
 
   @doc false
+  @spec init(jobs :: jobs_list()) :: {:producer, state()}
   def init(jobs) do
     state = %{
       jobs: Enum.into(jobs, %{}, fn %{name: name} = job -> {name, job} end),
@@ -41,12 +80,14 @@ defmodule Quantum.JobBroadcaster do
     {:producer, state}
   end
 
+  @spec handle_demand(demand :: integer(), state :: state()) :: noreply_return()
   def handle_demand(demand, %{buffer: buffer} = state) do
     {to_send, remaining} = Enum.split(buffer, demand)
 
     {:noreply, to_send, %{state | buffer: remaining}}
   end
 
+  @spec handle_cast(action :: job_action(), state :: state()) :: noreply_return()
   def handle_cast({:add, %Job{state: :active, name: job_name} = job}, %{jobs: jobs} = state) do
     Logger.debug(fn ->
       "[#{inspect(Node.self())}][#{__MODULE__}] Adding job #{inspect(job_name)}"
@@ -112,6 +153,8 @@ defmodule Quantum.JobBroadcaster do
     {:noreply, messages, %{state | jobs: %{}}}
   end
 
+  @spec handle_call(action :: job_action(), sender :: GenStage.from(), state :: state()) ::
+          reply_return()
   def handle_call(:jobs, _, %{jobs: jobs} = state), do: {:reply, Map.to_list(jobs), [], state}
 
   def handle_call({:find_job, name}, _, %{jobs: jobs} = state),
