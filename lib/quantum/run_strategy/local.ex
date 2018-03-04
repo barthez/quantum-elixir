@@ -12,7 +12,7 @@ defmodule Quantum.RunStrategy.Local do
 
   """
 
-  @type t :: %__MODULE__{nodes: any}
+  @type t :: %__MODULE__{nodes: nil}
 
   defstruct nodes: nil
 
